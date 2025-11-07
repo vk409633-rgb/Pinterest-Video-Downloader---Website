@@ -1,0 +1,18 @@
+{
+  "posts": [
+    {
+      "title": "Top Pinterest Marketing Tools (Sponsored)",
+      "excerpt": "Grow your Pinterest reach with these tools.",
+      "url": "https://example.com/pinterest-tools",
+      "sponsor": "Acme Co.",
+      "image": "/placeholder.png"
+    },
+    {
+      "title": "Edit Videos Faster with ProEditor (Sponsored)",
+      "excerpt": "Save hours per week with AI-assisted editing.",
+      "url": "https://example.com/proeditor",
+      "sponsor": "ProEditor",
+      "image": "/placeholder.png"
+    }
+  ]
+}
