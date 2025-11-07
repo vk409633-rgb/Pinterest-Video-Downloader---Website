@@ -1,79 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-import nodemailer from "nodemailer";
 import { createRateLimiter } from "@/lib/rate-limit";
 
-const limiter = createRateLimiter({ intervalMs: 10 * 60_000, uniqueTokenPerInterval: 5 }); // 5 per 10 min/IP
+const limiter = createRateLimiter({ intervalMs: 60_000, uniqueTokenPerInterval: 30 });
 
-const ContactSchema = z.object({
-  name: z.string().min(1).max(80),
-  email: z.string().email().max(120),
-  message: z.string().min(10).max(2000),
-  website: z.string().max(0).optional(), // honeypot must be empty
-  ts: z.number().optional(),
-});
-
-export async function POST(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
     "unknown";
-  const token = limiter.take(`contact:${ip}`);
+  const token = limiter.take(`download:${ip}`);
   if (!token.ok) {
-    return new NextResponse("Too many requests. Please try later.", { status: 429 });
+    return new NextResponse("Rate limit exceeded. Try again later.", { status: 429, headers: { "Retry-After": Math.ceil((token.resetAt - Date.now()) / 1000).toString() } });
   }
 
-  let body: unknown;
+  const src = req.nextUrl.searchParams.get("src");
+  if (!src) return new NextResponse("Missing src", { status: 400 });
+
+  let target: URL;
   try {
-    body = await req.json();
+    target = new URL(src);
   } catch {
-    return new NextResponse("Invalid JSON", { status: 400 });
+    return new NextResponse("Invalid src", { status: 400 });
   }
-  const parsed = ContactSchema.safeParse(body);
-  if (!parsed.success) return new NextResponse("Invalid payload", { status: 400 });
-
-  // Honeypot: if present or non-empty, pretend success
-  if (typeof (parsed.data.website as any) === "string" && (parsed.data.website as string).length > 0) {
-    return NextResponse.json({ ok: true });
+  if (!/^https?:$/.test(target.protocol)) {
+    return new NextResponse("Unsupported protocol", { status: 400 });
   }
 
-  // Simple time check: require 3s since form render (best-effort)
-  if (parsed.data.ts && Date.now() - parsed.data.ts < 3000) {
-    return new NextResponse("Submission too fast.", { status: 400 });
+  // Stream the remote video to the client
+  const upstream = await fetch(target.toString(), { headers: { "user-agent": "Mozilla/5.0" } });
+  if (!upstream.ok || !upstream.body) {
+    return new NextResponse("Failed to download source", { status: 400 });
   }
 
-  const to = process.env.CONTACT_TO || "vk409633@gmail.com";
-  const from = process.env.CONTACT_FROM || "no-reply@localhost";
+  const headers = new Headers();
+  const type = upstream.headers.get("content-type") || "video/mp4";
+  const length = upstream.headers.get("content-length") || undefined;
+  headers.set("Content-Type", type);
+  if (length) headers.set("Content-Length", length);
+  headers.set("Cache-Control", "private, max-age=0, no-store");
+  headers.set("Content-Disposition", `attachment; filename=pin-${Date.now()}.mp4`);
 
-  // If SMTP not configured, return OK with a notice
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env as Record<string, string | undefined>;
-  if (!SMTP_HOST || !SMTP_PORT) {
-    console.warn("Contact form received but SMTP not configured. Set SMTP_HOST/SMTP_PORT to enable email sending.");
-    return NextResponse.json({ ok: true, delivered: false });
-  }
-
-  try {
-    const transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: Number(SMTP_PORT) === 465,
-      auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
-    });
-
-    const { name, email, message } = parsed.data;
-    const info = await transporter.sendMail({
-      from,
-      to,
-      subject: "New contact form message - Pinterest Video Downloader",
-      replyTo: email,
-      text: `From: ${name} <${email}>
-IP: ${ip}
-\n${message}`,
-    });
-
-    return NextResponse.json({ ok: true, delivered: true, id: info.messageId });
-  } catch (err: any) {
-    console.error("Failed to send contact email", err);
-    return new NextResponse("Failed to send message", { status: 500 });
-  }
+  return new NextResponse(upstream.body, { status: 200, headers });
 }
